@@ -1,0 +1,39 @@
+{
+  "name": "ai-usage-stats",
+  "version": "0.2.0",
+  "description": "Beautiful self-contained HTML reports of your local AI coding-agent token usage & cost (Claude Code, Codex, OpenCode)",
+  "type": "module",
+  "bin": {
+    "ai-usage-stats": "./bin/ai-usage-stats.mjs"
+  },
+  "scripts": {
+    "build:viewer": "vite build --config viewer/vite.config.ts",
+    "dev:viewer": "vite --config viewer/vite.config.ts",
+    "build": "npm run build:viewer",
+    "report": "tsx src/index.ts report",
+    "start": "npm run build && npm run report"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.10.0",
+    "commander": "^12.1.0",
+    "open": "^10.1.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.19",
+    "framer-motion": "^11.3.0",
+    "postcss": "^8.4.39",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.12.7",
+    "tailwindcss": "^3.4.6",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.3",
+    "vite": "^5.3.3",
+    "vite-plugin-singlefile": "^2.0.1"
+  }
+}

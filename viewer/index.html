@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Usage Report</title>
+    <script>
+      // The CLI replaces the placeholder token below with the JSON-encoded
+      // report data. In dev it stays the literal placeholder string and the
+      // app falls back to sample data.
+      window.__USAGE_DATA__ = "__USAGE_DATA_PLACEHOLDER__";
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

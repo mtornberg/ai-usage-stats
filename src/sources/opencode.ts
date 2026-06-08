@@ -38,6 +38,10 @@ function dbPaths(dir: string): string[] {
   return out;
 }
 
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+}
+
 /** Turn a parsed message object (from DB blob or JSON file) into an event. */
 function messageToEvent(
   o: any,
@@ -108,13 +112,37 @@ function sessionDirMap(db: any): Map<string, string> {
   return map;
 }
 
-async function listJsonMessageFiles(dir: string): Promise<string[]> {
+function sessionDirMapDebug(db: any): { map: Map<string, string>; rows: number; ok: boolean; error?: string } {
+  const map = new Map<string, string>();
+  try {
+    const rows = db.prepare("SELECT id, directory, path, data FROM session").all();
+    for (const r of rows) {
+      let dir: string | undefined = r.directory || r.path || undefined;
+      if (!dir && r.data) {
+        try {
+          const d = JSON.parse(r.data);
+          dir = d.directory ?? d.path?.cwd ?? d.path?.root;
+        } catch {
+          /* ignore */
+        }
+      }
+      if (dir) map.set(r.id, dir);
+    }
+    return { map, rows: rows.length, ok: true };
+  } catch (err) {
+    return { map, rows: 0, ok: false, error: errorMessage(err) };
+  }
+}
+
+async function listJsonMessageFiles(
+  dir: string,
+): Promise<{ files: string[]; ok: boolean; error?: string }> {
   const msgDir = join(dir, "storage", "message");
   let sessionDirs;
   try {
     sessionDirs = await readdir(msgDir, { withFileTypes: true });
-  } catch {
-    return [];
+  } catch (err) {
+    return { files: [], ok: false, error: errorMessage(err) };
   }
   const out: string[] = [];
   for (const s of sessionDirs) {
@@ -127,7 +155,7 @@ async function listJsonMessageFiles(dir: string): Promise<string[]> {
       /* ignore */
     }
   }
-  return out;
+  return { files: out, ok: true };
 }
 
 export const opencodeAdapter: SourceAdapter = {
@@ -150,30 +178,53 @@ export const opencodeAdapter: SourceAdapter = {
     const sessions = new Set<string>();
     let files = 0;
 
+    opts.debug?.logKV("opencode.resolvedDir", opts.dir);
+    opts.debug?.logKV("opencode.dirExists", existsSync(opts.dir));
+
     // 1) Read from the SQLite database(s) first — this is where the bulk lives.
     let Database: any;
     try {
       ({ default: Database } = await import("better-sqlite3"));
-    } catch {
+      opts.debug?.log("opencode.better-sqlite3: import succeeded");
+    } catch (err) {
+      opts.debug?.logKV("opencode.better-sqlite3", `import failed: ${errorMessage(err)}`);
       Database = null;
     }
+    const discoveredDbPaths = dbPaths(opts.dir);
+    opts.debug?.logKV("opencode.dbPaths", discoveredDbPaths);
     if (Database) {
-      for (const dbPath of dbPaths(opts.dir)) {
+      for (const dbPath of discoveredDbPaths) {
         files++;
         let db: any;
+        let dbRows = 0;
+        let dbMessages = 0;
+        let dbEvents = 0;
         try {
           db = new Database(dbPath, { readonly: true, fileMustExist: true });
           db.pragma("busy_timeout = 3000");
-        } catch {
+          opts.debug?.logKV(`opencode.db.${dbPath}.open`, "success");
+        } catch (err) {
+          opts.debug?.logKV(`opencode.db.${dbPath}.open`, `failure: ${errorMessage(err)}`);
           continue;
         }
         try {
-          const dirMap = sessionDirMap(db);
+          const sessionDebug = opts.debug ? sessionDirMapDebug(db) : undefined;
+          const dirMap = sessionDebug?.map ?? sessionDirMap(db);
+          if (sessionDebug) {
+            opts.debug?.logKV(`opencode.db.${dbPath}.sessionMap`, {
+              ok: sessionDebug.ok,
+              rows: sessionDebug.rows,
+              mapped: sessionDebug.map.size,
+              error: sessionDebug.error,
+            });
+          }
           const stmt = db.prepare("SELECT id, session_id, data FROM message");
           for (const row of stmt.iterate()) {
+            dbRows++;
             let o: any;
             try {
               o = JSON.parse(row.data);
+              dbMessages++;
             } catch {
               continue;
             }
@@ -185,10 +236,14 @@ export const opencodeAdapter: SourceAdapter = {
             seen.add(key);
             if (row.session_id) sessions.add(row.session_id);
             events.push(ev);
+            dbEvents++;
           }
-        } catch {
+          opts.debug?.logKV(`opencode.db.${dbPath}.messageQuery`, "success");
+        } catch (err) {
+          opts.debug?.logKV(`opencode.db.${dbPath}.messageQuery`, `failure: ${errorMessage(err)}`);
           // query failed; skip this db
         } finally {
+          opts.debug?.logKV(`opencode.db.${dbPath}.counts`, { rows: dbRows, messages: dbMessages, events: dbEvents });
           try {
             db.close();
           } catch {
@@ -199,12 +254,21 @@ export const opencodeAdapter: SourceAdapter = {
     }
 
     // 2) Supplement with JSON message files (DB wins on duplicate ids).
-    const jsonFiles = await listJsonMessageFiles(opts.dir);
+    const jsonListing = await listJsonMessageFiles(opts.dir);
+    const jsonFiles = jsonListing.files;
+    opts.debug?.logKV(
+      "opencode.jsonMessageDirRead",
+      jsonListing.ok ? "success" : `failure: ${jsonListing.error}`,
+    );
+    opts.debug?.logKV("opencode.jsonFileCount", jsonFiles.length);
+    let jsonParsed = 0;
+    let jsonEvents = 0;
     for (const file of jsonFiles) {
       files++;
       let o: any;
       try {
         o = JSON.parse(await readFile(file, "utf8"));
+        jsonParsed++;
       } catch {
         continue;
       }
@@ -215,7 +279,10 @@ export const opencodeAdapter: SourceAdapter = {
       seen.add(key);
       if (o.sessionID) sessions.add(o.sessionID);
       events.push(ev);
+      jsonEvents++;
     }
+    opts.debug?.logKV("opencode.jsonCounts", { parsed: jsonParsed, events: jsonEvents });
+    opts.debug?.logKV("opencode.parseSummary", { events: events.length, sessions: sessions.size, files });
 
     return { events, sessions: sessions.size, files };
   },

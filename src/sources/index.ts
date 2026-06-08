@@ -1,4 +1,5 @@
 import type { SourceId, UsageEvent } from "../types.js";
+import type { DebugLogger } from "../debug.js";
 import { claudeAdapter } from "./claude.js";
 import { codexAdapter } from "./codex.js";
 import { opencodeAdapter } from "./opencode.js";
@@ -9,6 +10,7 @@ export interface ParseOpts {
   timezone: string;
   since?: string;
   until?: string;
+  debug?: DebugLogger;
 }
 
 export interface ParseOutput {

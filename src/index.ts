@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 import { resolve } from "node:path";
+import { homedir } from "node:os";
 import { Command } from "commander";
 import { loadPricing } from "./pricing.js";
 import { aggregate } from "./aggregate.js";
 import { writeReport } from "./report.js";
 import { ADAPTERS, adapterById, type SourceAdapter } from "./sources/index.js";
 import type { UsageEvent, SourceId } from "./types.js";
+import { createDebugLogger } from "./debug.js";
 
 function fmtUSD(n: number): string {
   return "$" + n.toFixed(2);
@@ -56,9 +58,36 @@ program
   .option("--since <date>", "only include usage on/after this date (YYYY-MM-DD)")
   .option("--until <date>", "only include usage on/before this date (YYYY-MM-DD)")
   .option("--offline", "skip the live pricing fetch; use cache/bundled prices")
+  .option("--debug", "enable diagnostic logging")
+  .option(
+    "--debug-log [file]",
+    "diagnostic log path when --debug is enabled (defaults to ./ai-usage-stats-debug.log)",
+  )
   .option("--open", "open the report in your browser when done")
   .action(async (opts) => {
     const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    const debugPath = opts.debug
+      ? resolve(
+          process.cwd(),
+          typeof opts.debugLog === "string"
+            ? opts.debugLog
+            : "ai-usage-stats-debug.log",
+        )
+      : undefined;
+    const debug = debugPath ? createDebugLogger(debugPath) : undefined;
+    if (debug) {
+      process.stderr.write(`▸ Writing debug log to ${debug.path}\n`);
+      debug.logKV("timestamp", new Date().toISOString());
+      debug.logKV("node", process.version);
+      debug.logKV("platform", process.platform);
+      debug.logKV("arch", process.arch);
+      debug.logKV("cwd", process.cwd());
+      debug.logKV("homedir", homedir());
+      debug.logKV("timezone", timezone);
+      debug.logKV("env.XDG_DATA_HOME", process.env.XDG_DATA_HOME ?? null);
+      debug.logKV("env.XDG_CONFIG_HOME", process.env.XDG_CONFIG_HOME ?? null);
+      debug.logKV("env.CLAUDE_CONFIG_DIR", process.env.CLAUDE_CONFIG_DIR ?? null);
+    }
 
     // Resolve which adapters to run.
     const wanted: Set<string> | null = opts.source
@@ -70,12 +99,17 @@ program
     for (const a of ADAPTERS) {
       if (wanted && !wanted.has(a.id)) continue;
       const dir = dirOverrides[a.id] ?? a.defaultDir();
-      if (wanted || (await a.exists(dir))) selected.push(a);
+      const found = await a.exists(dir);
+      debug?.logKV(`source.${a.id}.dir`, dir);
+      debug?.logKV(`source.${a.id}.exists`, found);
+      if (wanted || found) selected.push(a);
     }
+    debug?.logKV("selectedSources", selected.map((a) => a.id));
     if (selected.length === 0) {
       process.stderr.write(
         "✗ No sources selected or found. Try `ai-usage-stats sources`.\n",
       );
+      await debug?.flush();
       process.exit(1);
     }
 
@@ -89,13 +123,17 @@ program
         timezone,
         since: opts.since,
         until: opts.until,
+        debug,
       });
       sessionsBySource[a.id] = out.sessions;
       allEvents.push(...out.events);
       process.stderr.write(
         `  ${out.events.length} events · ${out.sessions} sessions · ${out.files} files\n`,
       );
+      debug?.logKV(`parse.${a.id}.summary`, out);
     }
+
+    await debug?.flush();
 
     if (allEvents.length === 0) {
       process.stderr.write(`✗ No usage events found.\n`);

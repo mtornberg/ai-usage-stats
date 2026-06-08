@@ -14,7 +14,7 @@ works offline once generated.
 | --- | --- | --- |
 | **Claude Code** | `~/.claude/projects/**/*.jsonl` | input/output + cache-write/read tokens |
 | **Codex** | `~/.codex/sessions/**/rollout-*.jsonl` | per-turn token deltas, reasoning tokens |
-| **OpenCode** | `~/.local/share/opencode/storage/message/**/*.json` | native cost, reasoning, response duration |
+| **OpenCode** | `~/.local/share/opencode/opencode*.db` + `storage/message/**/*.json` | native cost, reasoning, response duration |
 
 Sources are auto-detected — only those present on disk are included.
 
@@ -63,6 +63,12 @@ npx ai-usage-stats report --since 2026-01-01 --until 2026-03-31
 # don't hit the network for pricing (use cache / bundled table)
 npx ai-usage-stats report --offline
 
+# write diagnostics for troubleshooting source discovery/parsing
+npx ai-usage-stats report --source opencode --debug --offline
+
+# write diagnostics to a custom log path
+npx ai-usage-stats report --source opencode --debug --debug-log ./friend-debug.log --offline
+
 # override where a source reads from
 npx ai-usage-stats report --dir codex=/path/to/.codex/sessions
 ```
@@ -77,6 +83,8 @@ npx ai-usage-stats report --dir codex=/path/to/.codex/sessions
 | `--since <date>` | Only usage on/after `YYYY-MM-DD` | — |
 | `--until <date>` | Only usage on/before `YYYY-MM-DD` | — |
 | `--offline` | Skip live pricing fetch | off |
+| `--debug` | Enable diagnostic logging and write `./ai-usage-stats-debug.log` | off |
+| `--debug-log [file]` | Diagnostic log path when `--debug` is enabled | `./ai-usage-stats-debug.log` |
 | `--open` | Open the report when done | off |
 
 ## How it works

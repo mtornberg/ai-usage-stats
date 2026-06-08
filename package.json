@@ -14,7 +14,7 @@
     "start": "npm run build && npm run report"
   },
   "dependencies": {
-    "better-sqlite3": "^12.10.0",
+    "better-sqlite3": "12.9.0",
     "commander": "^12.1.0",
     "open": "^10.1.0"
   },

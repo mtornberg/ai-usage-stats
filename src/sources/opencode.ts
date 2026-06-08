@@ -42,6 +42,67 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
 }
 
+type OpenedDb = { db: any; driver: "better-sqlite3" | "node:sqlite" };
+
+async function importNodeSqlite(): Promise<any | null> {
+  try {
+    // Avoid a static typed import: this project targets @types/node 20, where
+    // node:sqlite is not declared. It exists at runtime on Node 22+/24.
+    const importer = Function("specifier", "return import(specifier)") as (specifier: string) => Promise<any>;
+    return await importer("node:sqlite");
+  } catch {
+    return null;
+  }
+}
+
+async function openDb(
+  dbPath: string,
+  Database: any,
+  opts: ParseOpts,
+): Promise<OpenedDb | null> {
+  if (Database) {
+    try {
+      const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+      try {
+        db.pragma?.("busy_timeout = 3000");
+      } catch (err) {
+        opts.debug?.logKV(`opencode.db.${dbPath}.better-sqlite3.busyTimeout`, `failure: ${errorMessage(err)}`);
+      }
+      opts.debug?.logKV(`opencode.db.${dbPath}.better-sqlite3.open`, "success");
+      opts.debug?.logKV(`opencode.db.${dbPath}.driver`, "better-sqlite3");
+      return { db, driver: "better-sqlite3" };
+    } catch (err) {
+      opts.debug?.logKV(`opencode.db.${dbPath}.better-sqlite3.open`, `failure: ${errorMessage(err)}`);
+    }
+  } else {
+    opts.debug?.logKV(`opencode.db.${dbPath}.better-sqlite3.open`, "unavailable: import failed");
+  }
+
+  const nodeSqlite = await importNodeSqlite();
+  if (!nodeSqlite?.DatabaseSync) {
+    opts.debug?.logKV(`opencode.db.${dbPath}.node:sqlite.open`, "unavailable");
+    return null;
+  }
+  try {
+    const db = new nodeSqlite.DatabaseSync(dbPath, { readOnly: true });
+    try {
+      db.exec?.("PRAGMA busy_timeout = 3000");
+    } catch (err) {
+      opts.debug?.logKV(`opencode.db.${dbPath}.node:sqlite.busyTimeout`, `failure: ${errorMessage(err)}`);
+    }
+    opts.debug?.logKV(`opencode.db.${dbPath}.node:sqlite.open`, "success");
+    opts.debug?.logKV(`opencode.db.${dbPath}.driver`, "node:sqlite");
+    return { db, driver: "node:sqlite" };
+  } catch (err) {
+    opts.debug?.logKV(`opencode.db.${dbPath}.node:sqlite.open`, `failure: ${errorMessage(err)}`);
+    return null;
+  }
+}
+
+function statementRows(stmt: any): any[] {
+  return stmt.all();
+}
+
 /** Turn a parsed message object (from DB blob or JSON file) into an event. */
 function messageToEvent(
   o: any,
@@ -192,63 +253,55 @@ export const opencodeAdapter: SourceAdapter = {
     }
     const discoveredDbPaths = dbPaths(opts.dir);
     opts.debug?.logKV("opencode.dbPaths", discoveredDbPaths);
-    if (Database) {
-      for (const dbPath of discoveredDbPaths) {
-        files++;
-        let db: any;
-        let dbRows = 0;
-        let dbMessages = 0;
-        let dbEvents = 0;
-        try {
-          db = new Database(dbPath, { readonly: true, fileMustExist: true });
-          db.pragma("busy_timeout = 3000");
-          opts.debug?.logKV(`opencode.db.${dbPath}.open`, "success");
-        } catch (err) {
-          opts.debug?.logKV(`opencode.db.${dbPath}.open`, `failure: ${errorMessage(err)}`);
-          continue;
+    for (const dbPath of discoveredDbPaths) {
+      files++;
+      const opened = await openDb(dbPath, Database, opts);
+      if (!opened) continue;
+      const db = opened.db;
+      let dbRows = 0;
+      let dbMessages = 0;
+      let dbEvents = 0;
+      try {
+        const sessionDebug = opts.debug ? sessionDirMapDebug(db) : undefined;
+        const dirMap = sessionDebug?.map ?? sessionDirMap(db);
+        if (sessionDebug) {
+          opts.debug?.logKV(`opencode.db.${dbPath}.sessionMap`, {
+            ok: sessionDebug.ok,
+            rows: sessionDebug.rows,
+            mapped: sessionDebug.map.size,
+            error: sessionDebug.error,
+          });
         }
-        try {
-          const sessionDebug = opts.debug ? sessionDirMapDebug(db) : undefined;
-          const dirMap = sessionDebug?.map ?? sessionDirMap(db);
-          if (sessionDebug) {
-            opts.debug?.logKV(`opencode.db.${dbPath}.sessionMap`, {
-              ok: sessionDebug.ok,
-              rows: sessionDebug.rows,
-              mapped: sessionDebug.map.size,
-              error: sessionDebug.error,
-            });
-          }
-          const stmt = db.prepare("SELECT id, session_id, data FROM message");
-          for (const row of stmt.iterate()) {
-            dbRows++;
-            let o: any;
-            try {
-              o = JSON.parse(row.data);
-              dbMessages++;
-            } catch {
-              continue;
-            }
-            if (row.session_id) o.sessionID = row.session_id;
-            const ev = messageToEvent(o, dirMap, opts);
-            if (!ev) continue;
-            const key = row.id ? `id:${row.id}` : `db:${dbPath}:${ev.ts}:${ev.model}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-            if (row.session_id) sessions.add(row.session_id);
-            events.push(ev);
-            dbEvents++;
-          }
-          opts.debug?.logKV(`opencode.db.${dbPath}.messageQuery`, "success");
-        } catch (err) {
-          opts.debug?.logKV(`opencode.db.${dbPath}.messageQuery`, `failure: ${errorMessage(err)}`);
-          // query failed; skip this db
-        } finally {
-          opts.debug?.logKV(`opencode.db.${dbPath}.counts`, { rows: dbRows, messages: dbMessages, events: dbEvents });
+        const stmt = db.prepare("SELECT id, session_id, data FROM message");
+        for (const row of statementRows(stmt)) {
+          dbRows++;
+          let o: any;
           try {
-            db.close();
+            o = JSON.parse(row.data);
+            dbMessages++;
           } catch {
-            /* ignore */
+            continue;
           }
+          if (row.session_id) o.sessionID = row.session_id;
+          const ev = messageToEvent(o, dirMap, opts);
+          if (!ev) continue;
+          const key = row.id ? `id:${row.id}` : `db:${dbPath}:${ev.ts}:${ev.model}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          if (row.session_id) sessions.add(row.session_id);
+          events.push(ev);
+          dbEvents++;
+        }
+        opts.debug?.logKV(`opencode.db.${dbPath}.messageQuery`, "success");
+      } catch (err) {
+        opts.debug?.logKV(`opencode.db.${dbPath}.messageQuery`, `failure: ${errorMessage(err)}`);
+        // query failed; skip this db
+      } finally {
+        opts.debug?.logKV(`opencode.db.${dbPath}.counts`, { rows: dbRows, messages: dbMessages, events: dbEvents });
+        try {
+          db.close();
+        } catch {
+          /* ignore */
         }
       }
     }

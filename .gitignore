@@ -4,3 +4,4 @@ viewer/dist/
 !viewer/index.html
 .DS_Store
 .history/
+ai-usage-stats-debug.log

@@ -130,7 +130,11 @@ program
       process.stderr.write(
         `  ${out.events.length} events · ${out.sessions} sessions · ${out.files} files\n`,
       );
-      debug?.logKV(`parse.${a.id}.summary`, out);
+      debug?.logKV(`parse.${a.id}.summary`, {
+        events: out.events.length,
+        sessions: out.sessions,
+        files: out.files,
+      });
     }
 
     await debug?.flush();
